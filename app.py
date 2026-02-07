@@ -22,30 +22,26 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# GLOBAL THEME
+# STYLING
 # -------------------------------------------------
 st.markdown(
     """
     <style>
     .stApp { background-color: white; color: black; }
-    header[data-testid="stHeader"] { background-color: white; border-bottom: 1px solid #eee; }
-    .stTextInput input { background-color: #FFF3E0; color: black; caret-color: black; }
-    .stButton > button {
+    .stTextInput input { background-color: #FFF3E0; color: black; }
+    .stButton>button {
         background: linear-gradient(90deg, #FFA000, #FFD54F);
         color: black; font-weight: bold; border-radius: 10px;
     }
     .card {
-        background-color: white; padding: 18px; border-radius: 12px;
+        background: white; padding: 18px; border-radius: 12px;
         box-shadow: 0px 6px 18px rgba(0,0,0,0.12);
         margin-bottom: 20px;
     }
     .source-box {
-        background-color: #FFECB3; padding: 14px;
-        border-radius: 10px; margin-bottom: 12px;
+        background: #FFECB3; padding: 14px;
         border-left: 6px solid #FB8C00;
-    }
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #FFE082, #FFD54F);
+        border-radius: 10px; margin-bottom: 12px;
     }
     </style>
     """,
@@ -55,15 +51,13 @@ st.markdown(
 # -------------------------------------------------
 # HEADER
 # -------------------------------------------------
-st.image("https://cdn-icons-png.flaticon.com/512/4712/4712109.png", width=120)
 st.title("Explainable AI Chatbot")
-st.markdown("### Vector Similarity Search with LLMs (RAG + XAI)")
+st.markdown("### RAG + Vector Similarity Search")
 
 # -------------------------------------------------
 # SIDEBAR
 # -------------------------------------------------
 with st.sidebar:
-    st.header("Upload Documents")
     uploaded_files = st.file_uploader(
         "Upload PDF files",
         type=["pdf"],
@@ -75,6 +69,7 @@ with st.sidebar:
 # -------------------------------------------------
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL = "google/flan-t5-base"
+
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 TOP_K = 4
@@ -88,43 +83,34 @@ class HFTransformerEmbeddings(Embeddings):
         self.model = AutoModel.from_pretrained(model_name)
         self.model.eval()
 
-    def _mean_pooling(self, output, mask):
-        embeddings = output.last_hidden_state
-        mask = mask.unsqueeze(-1).expand(embeddings.size()).float()
-        return torch.sum(embeddings * mask, dim=1) / torch.clamp(mask.sum(dim=1), min=1e-9)
-
     def _embed(self, text):
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+        inputs = self.tokenizer(
+            text, return_tensors="pt", padding=True, truncation=True
+        )
         with torch.no_grad():
             output = self.model(**inputs)
-        return self._mean_pooling(output, inputs["attention_mask"])[0].cpu().numpy()
+        embeddings = output.last_hidden_state.mean(dim=1)
+        return embeddings[0].cpu().numpy().tolist()
 
     def embed_documents(self, texts):
-        return [self._embed(t).tolist() for t in texts]
+        return [self._embed(t) for t in texts]
 
     def embed_query(self, text):
-        return self._embed(text).tolist()
+        return self._embed(text)
 
 # -------------------------------------------------
-# LOAD LLM (NO PIPELINE → FIXES KEYERROR)
+# LOAD LLM ✅ CORRECT WAY
 # -------------------------------------------------
 @st.cache_resource
 def load_llm():
-    tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
-    model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
-    model.eval()
-
-    def generate(prompt: str) -> str:
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                do_sample=False
-            )
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    return HuggingFacePipeline.from_llm(generate)
+    return HuggingFacePipeline.from_model_id(
+        model_id=LLM_MODEL,
+        task="text2text-generation",
+        model_kwargs={
+            "max_new_tokens": 256,
+            "do_sample": False
+        }
+    )
 
 # -------------------------------------------------
 # BUILD QA CHAIN
@@ -134,9 +120,6 @@ def build_qa_chain(files):
     documents = []
 
     for file in files:
-        if file.size == 0:
-            continue
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(file.read())
             path = tmp.name
@@ -162,27 +145,23 @@ def build_qa_chain(files):
     embeddings = HFTransformerEmbeddings(EMBEDDING_MODEL)
     vectorstore = FAISS.from_documents(chunks, embeddings)
 
-    retriever = vectorstore.as_retriever(
-        search_kwargs={"k": TOP_K}
-    )
+    retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
 
     llm = load_llm()
 
     return RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
-        return_source_documents=True,
-        chain_type="stuff"
+        return_source_documents=True
     )
 
 # -------------------------------------------------
-# MAIN UI
+# UI
 # -------------------------------------------------
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 
 question = st.text_input(
-    "Ask a question based on your uploaded documents",
-    placeholder="Type your question here..."
+    "Ask a question based on uploaded documents"
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
@@ -193,27 +172,21 @@ if uploaded_files:
     if st.button("Ask Question"):
         if question.strip():
             with st.spinner("Generating answer..."):
-                response = qa_chain(question)
+                result = qa_chain(question)
 
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
             st.subheader("Answer")
-            st.write(response["result"])
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.write(result["result"])
 
             st.subheader("Sources")
-            for i, doc in enumerate(response["source_documents"], 1):
+            for doc in result["source_documents"]:
                 st.markdown(
                     f"""
                     <div class="source-box">
-                    <b>Source {i}</b><br>
-                    <b>File:</b> {doc.metadata['source']}<br>
-                    <b>Page:</b> {doc.metadata['page']}<br><br>
+                    <b>{doc.metadata['source']}</b> (Page {doc.metadata['page']})<br>
                     {doc.page_content[:300]}...
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
-        else:
-            st.warning("Please enter a question.")
 else:
     st.info("Upload PDF files to begin.")
