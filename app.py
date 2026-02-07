@@ -5,14 +5,14 @@ from pypdf import PdfReader
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import HuggingFaceHub
+from langchain_community.embeddings import HuggingFaceInferenceEmbeddings
 from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
 
-# ----------------------------
-# PAGE CONFIG (UI FIX)
-# ----------------------------
+# ---------------------------------
+# PAGE CONFIG (UI FIXED)
+# ---------------------------------
 st.set_page_config(
     page_title="Explainable AI Chatbot",
     page_icon="🤖",
@@ -26,26 +26,26 @@ st.markdown(
             background-color: white;
             color: black;
         }
-        h1, h2, h3, h4, h5, h6 {
+        h1, h2, h3, h4 {
             color: black;
         }
-        .stTextInput>div>div>input {
-            color: black;
+        input {
+            color: black !important;
         }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# ----------------------------
+# ---------------------------------
 # TITLE
-# ----------------------------
+# ---------------------------------
 st.title("🤖 Explainable AI Chatbot")
-st.subheader("Ask questions based on your uploaded documents")
+st.write("Ask questions based on your uploaded PDF documents")
 
-# ----------------------------
-# LOAD LLM (CLOUD SAFE)
-# ----------------------------
+# ---------------------------------
+# LOAD LLM (HF API – SAFE)
+# ---------------------------------
 @st.cache_resource
 def load_llm():
     return HuggingFaceHub(
@@ -56,25 +56,25 @@ def load_llm():
         }
     )
 
-# ----------------------------
+# ---------------------------------
 # BUILD QA CHAIN
-# ----------------------------
+# ---------------------------------
 @st.cache_resource
 def build_qa_chain(uploaded_files):
     documents = []
 
-    for uploaded_file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            tmp_path = tmp_file.name
+    for file in uploaded_files:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(file.read())
+            path = tmp.name
 
-        reader = PdfReader(tmp_path)
+        reader = PdfReader(path)
         for page in reader.pages:
             text = page.extract_text()
             if text:
                 documents.append(Document(page_content=text))
 
-        os.remove(tmp_path)
+        os.remove(path)
 
     if not documents:
         return None
@@ -85,7 +85,9 @@ def build_qa_chain(uploaded_files):
     )
     chunks = splitter.split_documents(documents)
 
-    embeddings = HuggingFaceEmbeddings(
+    # ✅ CLOUD SAFE EMBEDDINGS
+    embeddings = HuggingFaceInferenceEmbeddings(
+        api_key=os.environ.get("HUGGINGFACEHUB_API_TOKEN"),
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
@@ -102,11 +104,11 @@ def build_qa_chain(uploaded_files):
 
     return qa_chain
 
-# ----------------------------
+# ---------------------------------
 # FILE UPLOAD
-# ----------------------------
+# ---------------------------------
 uploaded_files = st.file_uploader(
-    "📄 Upload PDF documents",
+    "📄 Upload PDF files",
     type=["pdf"],
     accept_multiple_files=True
 )
@@ -117,19 +119,18 @@ if uploaded_files:
         qa_chain = build_qa_chain(uploaded_files)
     st.success("Documents processed successfully!")
 
-# ----------------------------
+# ---------------------------------
 # QUESTION INPUT
-# ----------------------------
+# ---------------------------------
 st.markdown("### 💬 Ask a question")
-
 question = st.text_input(
-    "Type your question here and press Enter",
+    "Enter your question",
     placeholder="What is this document about?"
 )
 
-# ----------------------------
+# ---------------------------------
 # ANSWER
-# ----------------------------
+# ---------------------------------
 if question and qa_chain:
     with st.spinner("Generating answer..."):
         response = qa_chain.invoke({"query": question})
@@ -143,4 +144,4 @@ if question and qa_chain:
             st.write(doc.page_content)
 
 elif question and not qa_chain:
-    st.warning("Please upload at least one PDF document first.")
+    st.warning("Please upload PDF documents first.")
