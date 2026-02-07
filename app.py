@@ -4,9 +4,6 @@ import streamlit as st
 import tempfile
 from pypdf import PdfReader
 
-os.environ["LANGCHAIN_TRACING_V2"] = "false"
-os.environ["LANGCHAIN_API_KEY"] = ""
-
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
@@ -14,12 +11,7 @@ from langchain_core.documents import Document
 from langchain.embeddings.base import Embeddings
 from langchain_community.llms import HuggingFacePipeline
 
-from transformers import (
-    AutoTokenizer,
-    AutoModel,
-    AutoModelForSeq2SeqLM,
-    pipeline
-)
+from transformers import AutoTokenizer, AutoModel, AutoModelForSeq2SeqLM
 
 # -------------------------------------------------
 # PAGE CONFIG
@@ -35,61 +27,25 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .stApp {
-        background-color: white;
-        color: black;
-    }
-
-    header[data-testid="stHeader"] {
-        background-color: white !important;
-        border-bottom: 1px solid #eee;
-    }
-
-    header[data-testid="stHeader"] svg {
-        fill: black !important;
-    }
-
-    .stTextInput input {
-        background-color: #FFF3E0 !important;
-        color: black !important;
-        caret-color: black !important;
-        border-radius: 8px;
-    }
-
-    .stTextInput input::placeholder {
-        color: #555 !important;
-    }
-
+    .stApp { background-color: white; color: black; }
+    header[data-testid="stHeader"] { background-color: white; border-bottom: 1px solid #eee; }
+    .stTextInput input { background-color: #FFF3E0; color: black; caret-color: black; }
     .stButton > button {
         background: linear-gradient(90deg, #FFA000, #FFD54F);
-        color: black;
-        font-weight: bold;
-        border-radius: 10px;
-        padding: 10px 24px;
-        border: none;
+        color: black; font-weight: bold; border-radius: 10px;
     }
-
     .card {
-        background-color: white;
-        padding: 18px;
-        border-radius: 12px;
+        background-color: white; padding: 18px; border-radius: 12px;
         box-shadow: 0px 6px 18px rgba(0,0,0,0.12);
         margin-bottom: 20px;
-        color: black;
     }
-
     .source-box {
-        background-color: #FFECB3;
-        padding: 14px;
-        border-radius: 10px;
-        margin-bottom: 12px;
+        background-color: #FFECB3; padding: 14px;
+        border-radius: 10px; margin-bottom: 12px;
         border-left: 6px solid #FB8C00;
-        color: black;
     }
-
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #FFE082, #FFD54F);
-        color: black;
     }
     </style>
     """,
@@ -108,20 +64,11 @@ st.markdown("### Vector Similarity Search with LLMs (RAG + XAI)")
 # -------------------------------------------------
 with st.sidebar:
     st.header("Upload Documents")
-    st.markdown("Upload **one or more PDF files** to build your knowledge base.")
-
     uploaded_files = st.file_uploader(
-        "Choose PDF files",
+        "Upload PDF files",
         type=["pdf"],
         accept_multiple_files=True
     )
-
-    st.markdown("---")
-    st.markdown("### Capabilities")
-    st.markdown("- Semantic Search (FAISS)")
-    st.markdown("- Explainable Answers")
-    st.markdown("- Page-level Citations")
-    st.markdown("- Local LLM (FLAN-T5)")
 
 # -------------------------------------------------
 # CONFIG
@@ -133,7 +80,7 @@ CHUNK_OVERLAP = 100
 TOP_K = 4
 
 # -------------------------------------------------
-# EMBEDDINGS CLASS
+# EMBEDDINGS
 # -------------------------------------------------
 class HFTransformerEmbeddings(Embeddings):
     def __init__(self, model_name):
@@ -141,72 +88,67 @@ class HFTransformerEmbeddings(Embeddings):
         self.model = AutoModel.from_pretrained(model_name)
         self.model.eval()
 
-    def _mean_pooling(self, model_output, attention_mask):
-        token_embeddings = model_output.last_hidden_state
-        mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        return torch.sum(token_embeddings * mask, dim=1) / torch.clamp(mask.sum(dim=1), min=1e-9)
+    def _mean_pooling(self, output, mask):
+        embeddings = output.last_hidden_state
+        mask = mask.unsqueeze(-1).expand(embeddings.size()).float()
+        return torch.sum(embeddings * mask, dim=1) / torch.clamp(mask.sum(dim=1), min=1e-9)
 
     def _embed(self, text):
-        inputs = self.tokenizer(text, padding=True, truncation=True, return_tensors="pt")
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, padding=True)
         with torch.no_grad():
             output = self.model(**inputs)
-        embedding = self._mean_pooling(output, inputs["attention_mask"])
-        return embedding[0].cpu().numpy().tolist()
+        return self._mean_pooling(output, inputs["attention_mask"])[0].cpu().numpy()
 
     def embed_documents(self, texts):
-        return [self._embed(text) for text in texts]
+        return [self._embed(t).tolist() for t in texts]
 
     def embed_query(self, text):
-        return self._embed(text)
+        return self._embed(text).tolist()
 
 # -------------------------------------------------
-# LOAD LLM (SAFE CACHE)
+# LOAD LLM (NO PIPELINE → FIXES KEYERROR)
 # -------------------------------------------------
 @st.cache_resource
 def load_llm():
     tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
     model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
+    model.eval()
 
-    pipe = pipeline(
-        task="text2text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        device=-1,            # FORCE CPU (IMPORTANT)
-        max_new_tokens=256,
-        do_sample=False
-    )
+    def generate(prompt: str) -> str:
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=256,
+                do_sample=False
+            )
+        return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    return HuggingFacePipeline(pipeline=pipe)
+    return HuggingFacePipeline.from_llm(generate)
 
 # -------------------------------------------------
-# BUILD QA CHAIN (NO CACHE HERE)
+# BUILD QA CHAIN
 # -------------------------------------------------
+@st.cache_resource
 def build_qa_chain(files):
-    if not files:
-        return None
-
     documents = []
 
-    for uploaded_file in files:
-        if uploaded_file.size == 0:
+    for file in files:
+        if file.size == 0:
             continue
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(uploaded_file.read())
-            tmp_path = tmp.name
+            tmp.write(file.read())
+            path = tmp.name
 
-        reader = PdfReader(tmp_path)
-
-        for page_num, page in enumerate(reader.pages):
+        reader = PdfReader(path)
+        for i, page in enumerate(reader.pages):
             text = page.extract_text()
-            if text and text.strip():
+            if text:
                 documents.append(
                     Document(
                         page_content=text,
-                        metadata={
-                            "source": uploaded_file.name,
-                            "page": page_num + 1
-                        }
+                        metadata={"source": file.name, "page": i + 1}
                     )
                 )
 
@@ -221,7 +163,6 @@ def build_qa_chain(files):
     vectorstore = FAISS.from_documents(chunks, embeddings)
 
     retriever = vectorstore.as_retriever(
-        search_type="similarity",
         search_kwargs={"k": TOP_K}
     )
 
@@ -251,7 +192,7 @@ if uploaded_files:
 
     if st.button("Ask Question"):
         if question.strip():
-            with st.spinner("Generating explainable answer..."):
+            with st.spinner("Generating answer..."):
                 response = qa_chain(question)
 
             st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -259,15 +200,15 @@ if uploaded_files:
             st.write(response["result"])
             st.markdown("</div>", unsafe_allow_html=True)
 
-            st.subheader("Sources & Explanation")
+            st.subheader("Sources")
             for i, doc in enumerate(response["source_documents"], 1):
                 st.markdown(
                     f"""
                     <div class="source-box">
-                        <b>Source {i}</b><br>
-                        <b>Document:</b> {doc.metadata['source']}<br>
-                        <b>Page:</b> {doc.metadata['page']}<br><br>
-                        {doc.page_content[:300]}...
+                    <b>Source {i}</b><br>
+                    <b>File:</b> {doc.metadata['source']}<br>
+                    <b>Page:</b> {doc.metadata['page']}<br><br>
+                    {doc.page_content[:300]}...
                     </div>
                     """,
                     unsafe_allow_html=True
@@ -275,4 +216,4 @@ if uploaded_files:
         else:
             st.warning("Please enter a question.")
 else:
-    st.info("Upload PDF files from the sidebar to begin.")
+    st.info("Upload PDF files to begin.")
