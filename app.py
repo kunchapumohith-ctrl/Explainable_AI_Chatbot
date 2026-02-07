@@ -1,236 +1,146 @@
 import os
-import torch
-import streamlit as st
 import tempfile
+import streamlit as st
 from pypdf import PdfReader
-
-from transformers import AutoTokenizer, AutoModel, AutoModelForSeq2SeqLM
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.llms import HuggingFaceHub
 from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
-from langchain.embeddings.base import Embeddings
-from langchain_core.runnables import RunnableLambda
 
-# -------------------------------------------------
-# PAGE CONFIG
-# -------------------------------------------------
+# ----------------------------
+# PAGE CONFIG (UI FIX)
+# ----------------------------
 st.set_page_config(
     page_title="Explainable AI Chatbot",
+    page_icon="🤖",
     layout="wide"
 )
 
-# -------------------------------------------------
-# STYLE
-# -------------------------------------------------
 st.markdown(
     """
     <style>
-    .stApp { background-color: white; color: black; }
-    .stTextInput input {
-        background-color: #FFF3E0;
-        color: black;
-        caret-color: black;
-        border-radius: 8px;
-    }
-    .stButton>button {
-        background: linear-gradient(90deg, #FFA000, #FFD54F);
-        color: black;
-        font-weight: bold;
-        border-radius: 10px;
-        padding: 10px 24px;
-    }
-    .card {
-        background: white;
-        padding: 18px;
-        border-radius: 12px;
-        box-shadow: 0px 6px 18px rgba(0,0,0,0.12);
-        margin-bottom: 20px;
-    }
-    .source-box {
-        background: #FFECB3;
-        padding: 14px;
-        border-radius: 10px;
-        border-left: 6px solid #FB8C00;
-        margin-bottom: 12px;
-    }
+        .stApp {
+            background-color: white;
+            color: black;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: black;
+        }
+        .stTextInput>div>div>input {
+            color: black;
+        }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# -------------------------------------------------
-# HEADER
-# -------------------------------------------------
-st.title("Explainable AI Chatbot")
-st.markdown("### Vector Similarity Search + Explainable RAG")
+# ----------------------------
+# TITLE
+# ----------------------------
+st.title("🤖 Explainable AI Chatbot")
+st.subheader("Ask questions based on your uploaded documents")
 
-# -------------------------------------------------
-# SIDEBAR
-# -------------------------------------------------
-with st.sidebar:
-    st.header("Upload PDFs")
-    uploaded_files = st.file_uploader(
-        "Upload one or more PDF files",
-        type=["pdf"],
-        accept_multiple_files=True
-    )
-
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "google/flan-t5-base"
-
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 100
-TOP_K = 4
-
-# -------------------------------------------------
-# EMBEDDINGS (CPU SAFE)
-# -------------------------------------------------
-class HFTransformerEmbeddings(Embeddings):
-    def __init__(self, model_name):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
-        self.model.eval()
-
-    def _embed(self, text):
-        inputs = self.tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            padding=True
-        )
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-        embedding = outputs.last_hidden_state.mean(dim=1)
-        return embedding[0].cpu().numpy().tolist()
-
-    def embed_documents(self, texts):
-        return [self._embed(t) for t in texts]
-
-    def embed_query(self, text):
-        return self._embed(text)
-
-# -------------------------------------------------
-# LOAD LLM (ABSOLUTELY STABLE)
-# -------------------------------------------------
+# ----------------------------
+# LOAD LLM (CLOUD SAFE)
+# ----------------------------
 @st.cache_resource
 def load_llm():
-    tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        LLM_MODEL,
-        torch_dtype=torch.float32
+    return HuggingFaceHub(
+        repo_id="google/flan-t5-base",
+        model_kwargs={
+            "temperature": 0.2,
+            "max_length": 512
+        }
     )
-    model.eval()
 
-    def generate(prompt: str) -> str:
-        inputs = tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=1024
-        )
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                do_sample=False
-            )
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    return RunnableLambda(generate)
-
-# -------------------------------------------------
+# ----------------------------
 # BUILD QA CHAIN
-# -------------------------------------------------
+# ----------------------------
 @st.cache_resource
-def build_qa_chain(files):
+def build_qa_chain(uploaded_files):
     documents = []
 
-    for file in files:
-        if file.size == 0:
-            continue
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(file.read())
-            tmp_path = tmp.name
+    for uploaded_file in uploaded_files:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            tmp_path = tmp_file.name
 
         reader = PdfReader(tmp_path)
-        for page_num, page in enumerate(reader.pages):
+        for page in reader.pages:
             text = page.extract_text()
-            if text and text.strip():
-                documents.append(
-                    Document(
-                        page_content=text,
-                        metadata={
-                            "source": file.name,
-                            "page": page_num + 1
-                        }
-                    )
-                )
+            if text:
+                documents.append(Document(page_content=text))
+
+        os.remove(tmp_path)
+
+    if not documents:
+        return None
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP
+        chunk_size=1000,
+        chunk_overlap=200
     )
-
     chunks = splitter.split_documents(documents)
 
-    embeddings = HFTransformerEmbeddings(EMBEDDING_MODEL)
-    vectorstore = FAISS.from_documents(chunks, embeddings)
-
-    retriever = vectorstore.as_retriever(
-        search_kwargs={"k": TOP_K}
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
+
+    vectorstore = FAISS.from_documents(chunks, embeddings)
 
     llm = load_llm()
 
-    return RetrievalQA.from_chain_type(
+    qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
-        retriever=retriever,
+        chain_type="stuff",
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
         return_source_documents=True
     )
 
-# -------------------------------------------------
-# UI
-# -------------------------------------------------
-st.markdown("<div class='card'>", unsafe_allow_html=True)
+    return qa_chain
 
-question = st.text_input(
-    "Ask a question based on your uploaded documents",
-    placeholder="Type your question here..."
+# ----------------------------
+# FILE UPLOAD
+# ----------------------------
+uploaded_files = st.file_uploader(
+    "📄 Upload PDF documents",
+    type=["pdf"],
+    accept_multiple_files=True
 )
 
-st.markdown("</div>", unsafe_allow_html=True)
-
+qa_chain = None
 if uploaded_files:
-    qa_chain = build_qa_chain(uploaded_files)
+    with st.spinner("Processing documents..."):
+        qa_chain = build_qa_chain(uploaded_files)
+    st.success("Documents processed successfully!")
 
-    if st.button("Ask Question"):
-        if question.strip():
-            with st.spinner("Generating explainable answer..."):
-                response = qa_chain.invoke(question)
+# ----------------------------
+# QUESTION INPUT
+# ----------------------------
+st.markdown("### 💬 Ask a question")
 
-            st.subheader("Answer")
-            st.write(response["result"])
+question = st.text_input(
+    "Type your question here and press Enter",
+    placeholder="What is this document about?"
+)
 
-            st.subheader("Sources & Explanation")
-            for i, doc in enumerate(response["source_documents"], 1):
-                st.markdown(
-                    f"""
-                    <div class="source-box">
-                        <b>Source {i}</b><br>
-                        <b>Document:</b> {doc.metadata['source']}<br>
-                        <b>Page:</b> {doc.metadata['page']}<br><br>
-                        {doc.page_content[:300]}...
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-        else:
-            st.warning("Please enter a question.")
-else:
-    st.info("Upload PDF files from the sidebar to begin.")
+# ----------------------------
+# ANSWER
+# ----------------------------
+if question and qa_chain:
+    with st.spinner("Generating answer..."):
+        response = qa_chain.invoke({"query": question})
+
+    st.markdown("### ✅ Answer")
+    st.write(response["result"])
+
+    st.markdown("### 📚 Source Documents")
+    for i, doc in enumerate(response["source_documents"], start=1):
+        with st.expander(f"Source {i}"):
+            st.write(doc.page_content)
+
+elif question and not qa_chain:
+    st.warning("Please upload at least one PDF document first.")
