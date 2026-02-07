@@ -30,28 +30,25 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# GLOBAL THEME + FIXES
+# GLOBAL THEME
 # -------------------------------------------------
 st.markdown(
     """
     <style>
-
-    /* MAIN APP BACKGROUND */
     .stApp {
         background-color: white;
         color: black;
     }
 
-    /* STREAMLIT TOP HEADER (DEPLOY BAR FIX) */
     header[data-testid="stHeader"] {
         background-color: white !important;
         border-bottom: 1px solid #eee;
     }
+
     header[data-testid="stHeader"] svg {
         fill: black !important;
     }
 
-    /* INPUT FIXES (CURSOR + TEXT VISIBILITY) */
     .stTextInput input {
         background-color: #FFF3E0 !important;
         color: black !important;
@@ -59,12 +56,10 @@ st.markdown(
         border-radius: 8px;
     }
 
-    /* PLACEHOLDER TEXT */
     .stTextInput input::placeholder {
         color: #555 !important;
     }
 
-    /* BUTTON */
     .stButton > button {
         background: linear-gradient(90deg, #FFA000, #FFD54F);
         color: black;
@@ -74,7 +69,6 @@ st.markdown(
         border: none;
     }
 
-    /* CARDS */
     .card {
         background-color: white;
         padding: 18px;
@@ -84,7 +78,6 @@ st.markdown(
         color: black;
     }
 
-    /* SOURCES */
     .source-box {
         background-color: #FFECB3;
         padding: 14px;
@@ -94,12 +87,10 @@ st.markdown(
         color: black;
     }
 
-    /* SIDEBAR */
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #FFE082, #FFD54F);
         color: black;
     }
-
     </style>
     """,
     unsafe_allow_html=True
@@ -118,6 +109,7 @@ st.markdown("### Vector Similarity Search with LLMs (RAG + XAI)")
 with st.sidebar:
     st.header("Upload Documents")
     st.markdown("Upload **one or more PDF files** to build your knowledge base.")
+
     uploaded_files = st.file_uploader(
         "Choose PDF files",
         type=["pdf"],
@@ -168,10 +160,31 @@ class HFTransformerEmbeddings(Embeddings):
         return self._embed(text)
 
 # -------------------------------------------------
-# BUILD QA CHAIN
+# LOAD LLM (SAFE CACHE)
 # -------------------------------------------------
 @st.cache_resource
+def load_llm():
+    tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
+    model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
+
+    pipe = pipeline(
+        task="text2text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device=-1,            # FORCE CPU (IMPORTANT)
+        max_new_tokens=256,
+        do_sample=False
+    )
+
+    return HuggingFacePipeline(pipeline=pipe)
+
+# -------------------------------------------------
+# BUILD QA CHAIN (NO CACHE HERE)
+# -------------------------------------------------
 def build_qa_chain(files):
+    if not files:
+        return None
+
     documents = []
 
     for uploaded_file in files:
@@ -190,7 +203,10 @@ def build_qa_chain(files):
                 documents.append(
                     Document(
                         page_content=text,
-                        metadata={"source": uploaded_file.name, "page": page_num + 1}
+                        metadata={
+                            "source": uploaded_file.name,
+                            "page": page_num + 1
+                        }
                     )
                 )
 
@@ -209,18 +225,7 @@ def build_qa_chain(files):
         search_kwargs={"k": TOP_K}
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
-    model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
-
-    pipe = pipeline(
-        "text2text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=256,
-        do_sample=False
-    )
-
-    llm = HuggingFacePipeline(pipeline=pipe)
+    llm = load_llm()
 
     return RetrievalQA.from_chain_type(
         llm=llm,
