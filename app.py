@@ -1,6 +1,4 @@
-import os
 import tempfile
-import torch
 import streamlit as st
 from pypdf import PdfReader
 
@@ -8,7 +6,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import HuggingFacePipeline
-from langchain.chains import RetrievalQA
+from langchain.chains.retrieval import RetrievalQA
 from langchain_core.documents import Document
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
@@ -22,12 +20,17 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# SIMPLE & SAFE UI STYLE
+# BASIC UI FIX (NO HIDDEN TEXT)
 # -------------------------------------------------
 st.markdown("""
 <style>
-.stApp { background-color: #ffffff; color: black; }
-h1, h2, h3 { color: black; }
+.stApp {
+    background-color: white;
+    color: black;
+}
+h1, h2, h3, h4 {
+    color: black;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -35,7 +38,7 @@ h1, h2, h3 { color: black; }
 # HEADER
 # -------------------------------------------------
 st.title("🤖 Explainable AI Chatbot")
-st.markdown("### Document-based Q&A using RAG")
+st.markdown("### PDF Question Answering using RAG")
 
 # -------------------------------------------------
 # SIDEBAR
@@ -105,9 +108,9 @@ def build_qa_chain(files):
     )
 
 # -------------------------------------------------
-# MAIN APP
+# MAIN UI
 # -------------------------------------------------
-question = st.text_input("Ask a question based on your PDFs")
+question = st.text_input("Ask a question based on uploaded PDFs")
 
 if uploaded_files:
     qa_chain = build_qa_chain(uploaded_files)
@@ -125,4 +128,4 @@ if uploaded_files:
                 f"- **{doc.metadata['source']} (Page {doc.metadata['page']})**"
             )
 else:
-    st.info("Please upload PDF files to begin.")
+    st.info("Upload PDF files from the sidebar to start.")
