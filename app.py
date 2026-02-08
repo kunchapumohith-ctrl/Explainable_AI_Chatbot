@@ -1,129 +1,145 @@
-import streamlit as st
+import os
 import tempfile
+import torch
+import streamlit as st
 from pypdf import PdfReader
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_core.documents import Document
-
-
-# -----------------------------
-# PAGE CONFIG (UI FIX)
-# -----------------------------
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="Explainable AI Chatbot",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_icon="🤖",
+    layout="wide"
 )
 
+# ---------------- UI FIX ----------------
 st.markdown(
     """
     <style>
-        body {
-            background-color: white;
-        }
-        .stApp {
-            background-color: white;
-        }
+    .stApp {
+        background-color: white;
+        color: black;
+    }
     </style>
     """,
     unsafe_allow_html=True
 )
 
+st.title("🤖 Explainable AI Chatbot")
+st.subheader("Document-based Question Answering (RAG)")
 
-# -----------------------------
-# LOAD LLM (NO PIPELINE ❌)
-# -----------------------------
+# ---------------- IMPORTS (CORRECT) ----------------
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.llms import HuggingFacePipeline
+from langchain.chains import RetrievalQA
+
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
+    pipeline
+)
+
+# ---------------- CONFIG ----------------
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+LLM_MODEL = "google/flan-t5-base"
+
+# ---------------- SIDEBAR ----------------
+with st.sidebar:
+    st.header("📄 Upload PDFs")
+    uploaded_files = st.file_uploader(
+        "Upload one or more PDF files",
+        type=["pdf"],
+        accept_multiple_files=True
+    )
+
+# ---------------- VECTORSTORE ----------------
 @st.cache_resource
-def load_llm():
-    tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
-    model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
+def build_vectorstore(files):
+    if not files:
+        return None
 
-    def generate(prompt: str) -> str:
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=256
-        )
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    documents = []
 
-    return generate
+    for file in files:
+        if file.size == 0:
+            continue
 
-
-# -----------------------------
-# BUILD VECTOR STORE
-# -----------------------------
-@st.cache_resource
-def build_vectorstore(uploaded_files):
-    docs = []
-
-    for file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(file.read())
-            reader = PdfReader(tmp.name)
+            tmp.flush()
+
+            try:
+                reader = PdfReader(tmp.name)
+            except Exception:
+                continue
 
             for page in reader.pages:
                 text = page.extract_text()
-                if text:
-                    docs.append(Document(page_content=text))
+                if text and text.strip():
+                    documents.append(Document(page_content=text))
+
+    if not documents:
+        return None
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
+        chunk_size=800,
+        chunk_overlap=100
     )
-    split_docs = splitter.split_documents(docs)
+    docs = splitter.split_documents(documents)
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
+    embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+    vectorstore = FAISS.from_documents(docs, embeddings)
 
-    vectorstore = FAISS.from_documents(split_docs, embeddings)
     return vectorstore
 
+# ---------------- LLM ----------------
+@st.cache_resource
+def load_llm():
+    tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
+    model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
 
-# -----------------------------
-# UI
-# -----------------------------
-st.title("📄 Explainable AI Chatbot")
-st.write("Ask questions based on your uploaded PDF documents.")
+    pipe = pipeline(
+        task="text2text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        max_new_tokens=256
+    )
 
-uploaded_files = st.file_uploader(
-    "Upload PDF files",
-    type=["pdf"],
-    accept_multiple_files=True
-)
+    return HuggingFacePipeline(pipeline=pipe)
 
-question = st.text_input("Ask a question based on your documents")
+# ---------------- MAIN ----------------
+question = st.text_input("Ask a question from the uploaded documents")
 
-# -----------------------------
-# MAIN LOGIC
-# -----------------------------
-if uploaded_files and question:
-    with st.spinner("Processing documents..."):
-        vectorstore = build_vectorstore(uploaded_files)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+if uploaded_files:
+    vectorstore = build_vectorstore(uploaded_files)
 
-        docs = retriever.get_relevant_documents(question)
-        context = "\n\n".join([d.page_content for d in docs])
+    if vectorstore is None:
+        st.warning("No readable text found in uploaded PDFs.")
+        st.stop()
 
-        llm = load_llm()
+    llm = load_llm()
 
-        prompt = f"""
-Answer the question using only the context below.
-If the answer is not in the context, say "I don't know".
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+        return_source_documents=True
+    )
 
-Context:
-{context}
+    if st.button("Ask"):
+        if question.strip():
+            with st.spinner("Generating answer..."):
+                response = qa_chain.invoke(question)
 
-Question:
-{question}
+            st.subheader("✅ Answer")
+            st.write(response["result"])
 
-Answer:
-"""
-
-        answer = llm(prompt)
-
-    st.subheader("✅ Answer")
-    st.write(answer)
+            st.subheader("📌 Sources")
+            for i, doc in enumerate(response["source_documents"], 1):
+                st.markdown(f"**Source {i}:**")
+                st.write(doc.page_content[:300] + "...")
+        else:
+            st.warning("Please enter a question.")
+else:
+    st.info("Upload PDFs from the sidebar to begin.")
