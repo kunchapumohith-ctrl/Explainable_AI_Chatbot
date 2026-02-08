@@ -5,8 +5,6 @@ from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.llms import HuggingFacePipeline
-from langchain.chains.retrieval import RetrievalQA
 from langchain_core.documents import Document
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
@@ -20,17 +18,12 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# BASIC UI FIX (NO HIDDEN TEXT)
+# UI FIX (VISIBLE TEXT)
 # -------------------------------------------------
 st.markdown("""
 <style>
-.stApp {
-    background-color: white;
-    color: black;
-}
-h1, h2, h3, h4 {
-    color: black;
-}
+.stApp { background-color: white; color: black; }
+h1, h2, h3 { color: black; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,7 +31,7 @@ h1, h2, h3, h4 {
 # HEADER
 # -------------------------------------------------
 st.title("🤖 Explainable AI Chatbot")
-st.markdown("### PDF Question Answering using RAG")
+st.markdown("### PDF-based Question Answering (RAG)")
 
 # -------------------------------------------------
 # SIDEBAR
@@ -52,16 +45,16 @@ with st.sidebar:
     )
 
 # -------------------------------------------------
-# CONFIG
+# MODELS
 # -------------------------------------------------
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL = "google/flan-t5-base"
 
 # -------------------------------------------------
-# BUILD QA CHAIN
+# BUILD VECTOR STORE
 # -------------------------------------------------
 @st.cache_resource
-def build_qa_chain(files):
+def build_vectorstore(files):
     documents = []
 
     for file in files:
@@ -87,45 +80,62 @@ def build_qa_chain(files):
     chunks = splitter.split_documents(documents)
 
     embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
-    vectorstore = FAISS.from_documents(chunks, embeddings)
+    return FAISS.from_documents(chunks, embeddings)
 
+# -------------------------------------------------
+# LOAD LLM
+# -------------------------------------------------
+@st.cache_resource
+def load_llm():
     tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
     model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
 
-    pipe = pipeline(
+    return pipeline(
         "text2text-generation",
         model=model,
         tokenizer=tokenizer,
         max_new_tokens=256
     )
 
-    llm = HuggingFacePipeline(pipeline=pipe)
-
-    return RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
-        return_source_documents=True
-    )
-
 # -------------------------------------------------
-# MAIN UI
+# MAIN APP
 # -------------------------------------------------
 question = st.text_input("Ask a question based on uploaded PDFs")
 
 if uploaded_files:
-    qa_chain = build_qa_chain(uploaded_files)
+    vectorstore = build_vectorstore(uploaded_files)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    llm = load_llm()
 
     if st.button("Ask"):
         with st.spinner("Generating answer..."):
-            response = qa_chain.invoke(question)
+            docs = retriever.get_relevant_documents(question)
+
+            context = "\n\n".join(
+                f"Source: {d.metadata['source']} Page {d.metadata['page']}\n{d.page_content}"
+                for d in docs
+            )
+
+            prompt = f"""
+Answer the question using only the context below.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+            result = llm(prompt)[0]["generated_text"]
 
         st.subheader("Answer")
-        st.write(response["result"])
+        st.write(result)
 
         st.subheader("Sources")
-        for doc in response["source_documents"]:
+        for d in docs:
             st.markdown(
-                f"- **{doc.metadata['source']} (Page {doc.metadata['page']})**"
+                f"- **{d.metadata['source']} (Page {d.metadata['page']})**"
             )
 else:
-    st.info("Upload PDF files from the sidebar to start.")
+    st.info("Upload PDF files to start.")
