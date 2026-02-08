@@ -1,10 +1,9 @@
 import streamlit as st
 import tempfile
 from typing import List
-
 from pypdf import PdfReader
 
-# LangChain (PINNED, STABLE IMPORTS)
+# ------------------ LANGCHAIN (STABLE) ------------------
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -14,35 +13,93 @@ from langchain_community.llms import HuggingFacePipeline
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 
-# ------------------ CONFIG ------------------
+# ------------------ PAGE CONFIG ------------------
 st.set_page_config(
     page_title="Explainable AI Chatbot",
-    page_icon="🤖",
     layout="wide"
 )
 
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "google/flan-t5-base"
-
-# ------------------ UI FIX (WHITE BACKGROUND) ------------------
+# ------------------ GLOBAL UI (COPIED FROM YOUR UI CODE) ------------------
 st.markdown(
     """
     <style>
-        .stApp {
-            background-color: white;
-            color: black;
-        }
-        h1, h2, h3, h4 {
-            color: black;
-        }
+
+    /* MAIN BACKGROUND */
+    .stApp {
+        background-color: white;
+        color: black;
+    }
+
+    /* STREAMLIT TOP BAR FIX */
+    header[data-testid="stHeader"] {
+        background-color: white !important;
+        border-bottom: 1px solid #eee;
+    }
+    header[data-testid="stHeader"] svg {
+        fill: black !important;
+    }
+
+    /* INPUT FIX */
+    .stTextInput input {
+        background-color: #FFF3E0 !important;
+        color: black !important;
+        caret-color: black !important;
+        border-radius: 8px;
+    }
+
+    .stTextInput input::placeholder {
+        color: #555 !important;
+    }
+
+    /* BUTTON */
+    .stButton > button {
+        background: linear-gradient(90deg, #FFA000, #FFD54F);
+        color: black;
+        font-weight: bold;
+        border-radius: 10px;
+        padding: 10px 24px;
+        border: none;
+    }
+
+    /* CARD */
+    .card {
+        background-color: white;
+        padding: 18px;
+        border-radius: 12px;
+        box-shadow: 0px 6px 18px rgba(0,0,0,0.12);
+        margin-bottom: 20px;
+        color: black;
+    }
+
+    /* SOURCE BOX */
+    .source-box {
+        background-color: #FFECB3;
+        padding: 14px;
+        border-radius: 10px;
+        margin-bottom: 12px;
+        border-left: 6px solid #FB8C00;
+        color: black;
+    }
+
+    /* SIDEBAR */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #FFE082, #FFD54F);
+        color: black;
+    }
+
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# ------------------ TITLE ------------------
-st.title("🤖 Explainable AI Chatbot")
-st.write("Upload PDFs and ask questions based on their content.")
+# ------------------ HEADER ------------------
+st.image("https://cdn-icons-png.flaticon.com/512/4712/4712109.png", width=120)
+st.title("Explainable AI Chatbot")
+st.markdown("### Vector Similarity Search with LLMs (RAG + XAI)")
+
+# ------------------ CONFIG ------------------
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+LLM_MODEL = "google/flan-t5-base"
 
 # ------------------ PDF PROCESSING ------------------
 def load_documents(files) -> List[Document]:
@@ -57,23 +114,21 @@ def load_documents(files) -> List[Document]:
             tmp_path = tmp.name
 
         reader = PdfReader(tmp_path)
-        text = ""
 
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text
-
-        if text.strip():
-            documents.append(
-                Document(
-                    page_content=text,
-                    metadata={"source": file.name}
+        for page_num, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text and text.strip():
+                documents.append(
+                    Document(
+                        page_content=text,
+                        metadata={
+                            "source": file.name,
+                            "page": page_num + 1
+                        }
+                    )
                 )
-            )
 
     return documents
-
 
 # ------------------ VECTOR STORE ------------------
 @st.cache_resource(show_spinner="🔍 Creating vector store...")
@@ -86,12 +141,9 @@ def build_vectorstore(files):
     )
     chunks = splitter.split_documents(docs)
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL
-    )
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
     return FAISS.from_documents(chunks, embeddings)
-
 
 # ------------------ LLM ------------------
 @st.cache_resource(show_spinner="🤖 Loading language model...")
@@ -99,15 +151,15 @@ def load_llm():
     tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
     model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
 
-    text_gen_pipeline = pipeline(
+    pipe = pipeline(
         "text2text-generation",
         model=model,
         tokenizer=tokenizer,
-        max_new_tokens=256
+        max_new_tokens=256,
+        do_sample=False
     )
 
-    return HuggingFacePipeline(pipeline=text_gen_pipeline)
-
+    return HuggingFacePipeline(pipeline=pipe)
 
 # ------------------ QA CHAIN ------------------
 @st.cache_resource(show_spinner="🔗 Building QA chain...")
@@ -118,36 +170,64 @@ def build_qa_chain(files):
     return RetrievalQA.from_chain_type(
         llm=llm,
         chain_type="stuff",
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
         return_source_documents=True
     )
 
-
 # ------------------ SIDEBAR ------------------
 with st.sidebar:
-    st.header("📄 Upload PDFs")
+    st.header("📄 Upload Documents")
+    st.markdown("Upload **one or more PDF files**")
     uploaded_files = st.file_uploader(
-        "Upload one or more PDF files",
-        type="pdf",
+        "Choose PDF files",
+        type=["pdf"],
         accept_multiple_files=True
     )
 
-# ------------------ MAIN APP ------------------
+    st.markdown("---")
+    st.markdown("### Capabilities")
+    st.markdown("- Semantic Search (FAISS)")
+    st.markdown("- Explainable Answers")
+    st.markdown("- Page-level Citations")
+    st.markdown("- Local LLM (FLAN-T5)")
+
+# ------------------ MAIN UI ------------------
+st.markdown("<div class='card'>", unsafe_allow_html=True)
+
+question = st.text_input(
+    "Ask a question based on your uploaded documents",
+    placeholder="Type your question here..."
+)
+
+st.markdown("</div>", unsafe_allow_html=True)
+
 if uploaded_files:
     qa_chain = build_qa_chain(uploaded_files)
 
-    question = st.text_input("❓ Ask a question from the documents")
+    if st.button("Ask Question"):
+        if question.strip():
+            with st.spinner("Generating explainable answer..."):
+                response = qa_chain.invoke(question)
 
-    if question:
-        with st.spinner("Thinking..."):
-            result = qa_chain.invoke(question)
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.subheader("Answer")
+            st.write(response["result"])
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        st.subheader("✅ Answer")
-        st.write(result["result"])
-
-        with st.expander("📚 Source Documents"):
-            for doc in result["source_documents"]:
-                st.markdown(f"**Source:** {doc.metadata.get('source')}")
-                st.write(doc.page_content[:500] + "...")
+            st.subheader("Sources & Explanation")
+            for i, doc in enumerate(response["source_documents"], 1):
+                st.markdown(
+                    f"""
+                    <div class="source-box">
+                        <b>Source {i}</b><br>
+                        <b>Document:</b> {doc.metadata.get('source')}<br>
+                        <b>Page:</b> {doc.metadata.get('page')}<br><br>
+                        {doc.page_content[:300]}...
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+        else:
+            st.warning("Please enter a question.")
 else:
-    st.info("⬅️ Upload PDFs from the sidebar to begin.")
+    st.info("⬅️ Upload PDF files from the sidebar to begin.")
