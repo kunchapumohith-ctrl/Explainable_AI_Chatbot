@@ -18,12 +18,12 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# UI FIX (VISIBLE TEXT)
+# UI FIX
 # -------------------------------------------------
 st.markdown("""
 <style>
 .stApp { background-color: white; color: black; }
-h1, h2, h3 { color: black; }
+h1, h2, h3, h4 { color: black; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,7 +51,7 @@ EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL = "google/flan-t5-base"
 
 # -------------------------------------------------
-# BUILD VECTOR STORE
+# VECTOR STORE
 # -------------------------------------------------
 @st.cache_resource
 def build_vectorstore(files):
@@ -77,13 +77,14 @@ def build_vectorstore(files):
         chunk_size=800,
         chunk_overlap=100
     )
+
     chunks = splitter.split_documents(documents)
 
     embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
     return FAISS.from_documents(chunks, embeddings)
 
 # -------------------------------------------------
-# LOAD LLM
+# LOAD LLM (FIXED)
 # -------------------------------------------------
 @st.cache_resource
 def load_llm():
@@ -91,7 +92,7 @@ def load_llm():
     model = AutoModelForSeq2SeqLM.from_pretrained(LLM_MODEL)
 
     return pipeline(
-        "text2text-generation",
+        task="text2text-generation",   # 🔥 THIS FIXES THE KEYERROR
         model=model,
         tokenizer=tokenizer,
         max_new_tokens=256
@@ -112,12 +113,12 @@ if uploaded_files:
             docs = retriever.get_relevant_documents(question)
 
             context = "\n\n".join(
-                f"Source: {d.metadata['source']} Page {d.metadata['page']}\n{d.page_content}"
+                f"Source: {d.metadata['source']} (Page {d.metadata['page']})\n{d.page_content}"
                 for d in docs
             )
 
             prompt = f"""
-Answer the question using only the context below.
+Answer the question using ONLY the context below.
 
 Context:
 {context}
@@ -134,8 +135,6 @@ Answer:
 
         st.subheader("Sources")
         for d in docs:
-            st.markdown(
-                f"- **{d.metadata['source']} (Page {d.metadata['page']})**"
-            )
+            st.markdown(f"- **{d.metadata['source']} (Page {d.metadata['page']})**")
 else:
     st.info("Upload PDF files to start.")
