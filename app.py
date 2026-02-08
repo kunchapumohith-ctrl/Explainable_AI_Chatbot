@@ -1,27 +1,14 @@
-import os
-import tempfile
 import streamlit as st
-import torch
+import tempfile
 from pypdf import PdfReader
 
-# -----------------------------
-# LANGCHAIN IMPORTS (NEW STYLE)
-# -----------------------------
-from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.chains import RetrievalQA
 from langchain_community.llms import HuggingFacePipeline
-from langchain.chains.retrieval_qa.base import RetrievalQA
 
-# -----------------------------
-# TRANSFORMERS
-# -----------------------------
-from transformers import (
-    AutoTokenizer,
-    AutoModelForSeq2SeqLM,
-    pipeline,
-)
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 
 # -----------------------------
 # STREAMLIT CONFIG
