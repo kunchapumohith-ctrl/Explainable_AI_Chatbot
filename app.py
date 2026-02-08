@@ -3,7 +3,7 @@ import tempfile
 from typing import List
 from pypdf import PdfReader
 
-# ------------------ LANGCHAIN (STABLE) ------------------
+# ---------------- LANGCHAIN IMPORTS (STABLE) ----------------
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -13,13 +13,13 @@ from langchain_community.llms import HuggingFacePipeline
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 
-# ------------------ PAGE CONFIG ------------------
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="Explainable AI Chatbot",
     layout="wide"
 )
 
-# ------------------ GLOBAL UI (COPIED FROM YOUR UI CODE) ------------------
+# ---------------- GLOBAL UI + VISIBILITY FIX ----------------
 st.markdown(
     """
     <style>
@@ -30,16 +30,24 @@ st.markdown(
         color: black;
     }
 
-    /* STREAMLIT TOP BAR FIX */
+    /* STREAMLIT TOP BAR (DEPLOY / RUNNING FIX) */
     header[data-testid="stHeader"] {
         background-color: white !important;
-        border-bottom: 1px solid #eee;
+        border-bottom: 1px solid #eaeaea;
     }
-    header[data-testid="stHeader"] svg {
+
+    header[data-testid="stHeader"] svg,
+    header[data-testid="stHeader"] span {
+        color: black !important;
         fill: black !important;
     }
 
-    /* INPUT FIX */
+    /* ALL HEADINGS */
+    h1, h2, h3, h4, h5, h6 {
+        color: black !important;
+    }
+
+    /* TEXT INPUT */
     .stTextInput input {
         background-color: #FFF3E0 !important;
         color: black !important;
@@ -51,17 +59,17 @@ st.markdown(
         color: #555 !important;
     }
 
-    /* BUTTON */
+    /* BUTTONS */
     .stButton > button {
         background: linear-gradient(90deg, #FFA000, #FFD54F);
-        color: black;
+        color: black !important;
         font-weight: bold;
         border-radius: 10px;
         padding: 10px 24px;
         border: none;
     }
 
-    /* CARD */
+    /* CARDS */
     .card {
         background-color: white;
         padding: 18px;
@@ -71,7 +79,7 @@ st.markdown(
         color: black;
     }
 
-    /* SOURCE BOX */
+    /* SOURCES */
     .source-box {
         background-color: #FFECB3;
         padding: 14px;
@@ -92,16 +100,19 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ------------------ HEADER ------------------
-st.image("https://cdn-icons-png.flaticon.com/512/4712/4712109.png", width=120)
+# ---------------- HEADER ----------------
+st.image(
+    "https://cdn-icons-png.flaticon.com/512/4712/4712109.png",
+    width=110
+)
 st.title("Explainable AI Chatbot")
 st.markdown("### Vector Similarity Search with LLMs (RAG + XAI)")
 
-# ------------------ CONFIG ------------------
+# ---------------- CONFIG ----------------
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL = "google/flan-t5-base"
 
-# ------------------ PDF PROCESSING ------------------
+# ---------------- PDF LOADING ----------------
 def load_documents(files) -> List[Document]:
     documents = []
 
@@ -130,7 +141,7 @@ def load_documents(files) -> List[Document]:
 
     return documents
 
-# ------------------ VECTOR STORE ------------------
+# ---------------- VECTOR STORE ----------------
 @st.cache_resource(show_spinner="🔍 Creating vector store...")
 def build_vectorstore(files):
     docs = load_documents(files)
@@ -139,13 +150,16 @@ def build_vectorstore(files):
         chunk_size=800,
         chunk_overlap=100
     )
+
     chunks = splitter.split_documents(docs)
 
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    embeddings = HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL
+    )
 
     return FAISS.from_documents(chunks, embeddings)
 
-# ------------------ LLM ------------------
+# ---------------- LLM ----------------
 @st.cache_resource(show_spinner="🤖 Loading language model...")
 def load_llm():
     tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
@@ -161,7 +175,7 @@ def load_llm():
 
     return HuggingFacePipeline(pipeline=pipe)
 
-# ------------------ QA CHAIN ------------------
+# ---------------- QA CHAIN ----------------
 @st.cache_resource(show_spinner="🔗 Building QA chain...")
 def build_qa_chain(files):
     vectorstore = build_vectorstore(files)
@@ -174,10 +188,11 @@ def build_qa_chain(files):
         return_source_documents=True
     )
 
-# ------------------ SIDEBAR ------------------
+# ---------------- SIDEBAR ----------------
 with st.sidebar:
-    st.header("📄 Upload Documents")
+    st.header("Upload Documents")
     st.markdown("Upload **one or more PDF files**")
+
     uploaded_files = st.file_uploader(
         "Choose PDF files",
         type=["pdf"],
@@ -186,17 +201,17 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### Capabilities")
-    st.markdown("- Semantic Search (FAISS)")
+    st.markdown("- Semantic Search")
     st.markdown("- Explainable Answers")
     st.markdown("- Page-level Citations")
     st.markdown("- Local LLM (FLAN-T5)")
 
-# ------------------ MAIN UI ------------------
+# ---------------- MAIN UI ----------------
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 
 question = st.text_input(
     "Ask a question based on your uploaded documents",
-    placeholder="Type your question here..."
+    placeholder="Type your question here and press Enter to apply"
 )
 
 st.markdown("</div>", unsafe_allow_html=True)
@@ -207,15 +222,15 @@ if uploaded_files:
     if st.button("Ask Question"):
         if question.strip():
             with st.spinner("Generating explainable answer..."):
-                response = qa_chain.invoke(question)
+                result = qa_chain.invoke(question)
 
             st.markdown("<div class='card'>", unsafe_allow_html=True)
             st.subheader("Answer")
-            st.write(response["result"])
+            st.write(result["result"])
             st.markdown("</div>", unsafe_allow_html=True)
 
             st.subheader("Sources & Explanation")
-            for i, doc in enumerate(response["source_documents"], 1):
+            for i, doc in enumerate(result["source_documents"], 1):
                 st.markdown(
                     f"""
                     <div class="source-box">
@@ -230,4 +245,4 @@ if uploaded_files:
         else:
             st.warning("Please enter a question.")
 else:
-    st.info("⬅️ Upload PDF files from the sidebar to begin.")
+    st.info("Upload PDF files from the sidebar to begin.")
