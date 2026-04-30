@@ -24,3 +24,7 @@ Example:
 User: What is machine learning?
 Bot: Machine learning is a subset of AI...
 Explanation: Retrieved from document X with similarity score 0.87
+
+
+Live Demo:
+Try the app here: 🎵 [Open App](https://explainable-ai-chatbot-mohith-dxtbgrtvkgjocy7uvi5z.streamlit.app/)
